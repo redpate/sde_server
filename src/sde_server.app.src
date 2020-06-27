@@ -1,0 +1,19 @@
+{application, sde_server,
+ [{description, "Application for processing and storing data from EvE Online SDE"},
+  {vsn, "0.1.0"},
+  {registered, [sde, sde_server]},
+  {mod, {sde_server_app, []}},
+  {applications,
+   [kernel,
+    stdlib
+   ]},
+  {env,[
+      {default_sde_dir,"../eve_sde/sde/"},
+      {default_priv_dir,"priv/"}
+     %%% {clean_start, true}
+    ]},
+  {modules, []},
+
+  {licenses, ["Apache 2.0"]},
+  {links, []}
+ ]}.
