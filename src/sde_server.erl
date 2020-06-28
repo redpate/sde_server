@@ -48,11 +48,10 @@ init({SdeDir, PrivDir}) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling call messages
 %%--------------------------------------------------------------------
-handle_call({create, dets, _TableName, Options}, _From, #{priv_dir := PrivDir, dets_tables := TablesMap}=State) ->
-    TableName = {_TableName, gen_index(_TableName, TablesMap)},  %% index for tables in case of scaling or version control
-    FilePath = ?MODULE:gen_table_path(PrivDir, TableName),  %%  TODO add check for predefined filepath
-    NewTablesMap = ?MODULE:create_dets(TableName, FilePath, Options, TablesMap),
-    {reply, TableName, State#{dets_tables => NewTablesMap}};
+handle_call({create, dets, _BaseTableName, Options}, _From, #{priv_dir := PrivDir, dets_tables := TablesMap}=State) ->
+    _TableName = {_BaseTableName, gen_index(_BaseTableName, TablesMap)}, 
+    {TableName, NewTablesMap}=Res = ?MODULE:create_dets(_TableName, PrivDir, Options, TablesMap),
+    {reply, Res, State#{dets_tables => NewTablesMap}};
 handle_call({get, dets, TableName, Index}, _From, #{priv_dir := PrivDir, dets_tables := TablesMap}=State) ->
      Res = maps:get(ref,
             maps:get(Index, 
@@ -95,6 +94,13 @@ handle_cast(_Msg, State) ->
 %%                                       {stop, Reason, State}
 %% Description: Handling all non call/cast messages
 %%--------------------------------------------------------------------
+handle_info({reopen, TablePath, {TableName, TableIndex}}, #{dets_tables := TablesMap}=State) -> 
+    ok = dets:close({TableName, TableIndex}), error_logger:error_msg("close ~p", [TableName]),
+    {ok, Ref}= dets:open_file(TablePath), %% if dets file deleted during this time. there is something global wrong with usage of app
+    error_logger:error_msg("open ~p", [TablePath]),
+    TableMap =maps:get(TableName,TablesMap,#{}),
+    IndexMap =maps:get(TableIndex,TableMap,#{}),
+    {noreply, State#{dets_tables => TablesMap#{TableName => TableMap#{TableIndex => IndexMap#{ref => Ref, file => TablePath}}}}};
 handle_info(_Info, State) ->
     {noreply, State}.
 %%--------------------------------------------------------------------
@@ -133,12 +139,35 @@ get_table(TableName, Index)->
 delete_dets(Table)->
     gen_server:call(?MODULE, {delete, dets, Table}).
 
+-spec parse_yaml(list()) -> worker().
+
 parse_yaml(FileName)->
     gen_server:call(?MODULE, {parse_yaml, FileName, [], ?SIMPLE_PARSER}).
+
+-type option() :: {access, dets:access()}
+     | {auto_save, dets:auto_save()}
+     | {estimated_no_objects, integer()}
+     | {max_no_slots, dets:no_slots()}
+     | {min_no_slots, dets:no_slots()}
+     | {keypos, dets:keypos()}
+     | {ram_file, boolean()}
+     | {repair, boolean() | force}
+     | {type, dets:type()}
+     | {name, {term(), term()}}
+     | {file, file:name()}.
+
+-type pase_fun() :: {module(), function()}.
+-type worker() :: pid().
+
+-spec parse_yaml(list(), [option()] | pase_fun()) -> worker().
+
 parse_yaml(FileName, TableOptions) when is_list(TableOptions)->
     gen_server:call(?MODULE, {parse_yaml, FileName, TableOptions, ?SIMPLE_PARSER});
 parse_yaml(FileName, ParseFunction) when is_tuple(ParseFunction)->
     gen_server:call(?MODULE, {parse_yaml, FileName, [], ParseFunction}).
+
+-spec parse_yaml(list(), option(), pase_fun()) -> worker().
+
 parse_yaml(FileName, TableOptions, ParseFunction) when is_tuple(ParseFunction)->
     gen_server:call(?MODULE, {parse_yaml, FileName, TableOptions, ParseFunction}).
 
@@ -152,16 +181,17 @@ state()->
 -define(YAML_PARSING_OPTIONS, [{maps, true}]).
 
 parse_yaml(_FilePath, TableOptions, {ParseModule, ParseFunction}, ReturnPid, #{sde_dir := SdeDir}=State)->
-    TableName = filename:basename(_FilePath, ".yaml"),
+    _TableName = filename:basename(_FilePath, ".yaml"),
     FilePath = filename:join(SdeDir, _FilePath),
-    Dets = ?MODULE:create_dets(TableName, TableOptions),
-    error_logger:info_msg("Parsing ~p yaml file ....", [FilePath]),
+    {TableName, Dets} = create_dets(_TableName, TableOptions),
+    error_logger:info_msg("Parsing ~p yaml file to ~p dets....", [FilePath, TableName]),
     case fast_yaml:decode_from_file(FilePath, ?YAML_PARSING_OPTIONS) of
         {ok, ParsedYaml}->
-            error_logger:info_msg("~p file parsed, writing dets table...", [FilePath]),
-            apply(ParseModule, ParseFunction, [Dets, ParsedYaml]),
-            error_logger:info_msg("~p writen as ~p dets table. Closing table...", [FilePath, Dets]),
-            maps:get(pid, State, ReturnPid) ! {reload, TableName},
+            apply(ParseModule, ParseFunction, [TableName, ParsedYaml]),
+            TablePath = get_dets_file(TableName, Dets),
+            ok = dets:sync(TableName),
+            error_logger:error_msg("sync ~p", [TableName]),
+            maps:get(pid, State, ReturnPid) ! {reopen, TablePath, TableName},
             ok;
         Error->
             error_logger:error_msg("Cannot parse ~p yaml file. ~p", [FilePath, Error]),
@@ -169,19 +199,50 @@ parse_yaml(_FilePath, TableOptions, {ParseModule, ParseFunction}, ReturnPid, #{s
             throw(Error)
     end.
 
-create_dets({BaseName, Index}=TableName, FilePath, Options, TablesMap)->
-    {ok, TableName} = dets:open_file(TableName, [{file, FilePath} |Options]),
+create_dets(_TableName, PrivDir, _Options, TablesMap)->
+    {{BaseName, Index}=TableName, _FilePath, Options1} = proc_options(_Options, _TableName),
+    {FilePath, Options} = case _FilePath of
+        undefined -> 
+            FilePath1 = ?MODULE:gen_table_path(PrivDir, TableName),
+            {FilePath1, [{file, FilePath1} |Options1]};
+        _->
+            {_FilePath, Options1}
+    end,
+    {ok, TableName} = dets:open_file(TableName, Options),
     BaseMap = maps:get(BaseName, TablesMap, #{}),  %% already checked at stage of generating index
-    TablesMap#{BaseName => BaseMap#{Index => #{file => FilePath}}}.
+    error_logger:error_msg("Created ~p", [self()]),
+    {TableName, TablesMap#{BaseName => BaseMap#{Index => #{file => FilePath}}}}.
 
-gen_table_path(Root, {Name,Index})->
+proc_options(Options, _TableName)->
+     %% split common dets options. exept file option
+    {ComOptions, _Rest} = proplists:split(Options,
+        [access, auto_save, estimated_no_objects, max_no_slots, min_no_slots, keypos, ram_file, repair, type]
+    ),
+    Rest = lists:flatten(_Rest),
+    TableName = proplists:get_value(name, Rest, _TableName),
+    case proplists:get_value(file, Rest) of
+        undefined->
+            {TableName, undefined, lists:flatten(ComOptions)};
+        FilePath->
+            {TableName, FilePath, [{file, FilePath}|lists:flatten(ComOptions)]}
+    end.
+
+
+gen_table_path(Root, {Name,Index}) when list(Index)->
+    filename:join(Root, lists:append([Name, "_", Index, ".dets"]));
+gen_table_path(Root, {Name,Index}) when is_integer(Index)->
     filename:join(Root, lists:append([Name, "_", integer_to_list(Index), ".dets"])).
 
 gen_index(BaseName, TablesMap)->
+    get_max_index(BaseName, TablesMap)+1.
+get_max_index(BaseName, TablesMap)->
     BaseMap = maps:get(BaseName, TablesMap, #{}),
     case maps:keys(BaseMap) of
         [] -> 0;
-        KeysList -> lists:last(lists:usort(KeysList))+1  %% assume that index is integer
+        KeysList -> lists:foldr(fun
+            (IntKey,MaxKey) when is_integer(IntKey) and (IntKey > MaxKey) -> IntKey;
+            (_NonIntKey,MaxKey)-> MaxKey
+        end, 0, KeysList)
     end.
 
 is_valid_tablename({TableName, TableIndex}=Table, TablesMap)->
@@ -199,7 +260,7 @@ write_new_table(Key, Record, Table)->
     true = dets:insert_new(Table, {Key, Record}), Table.
 
 
-delete_dets({TableName, TableIndex}=Table, TablesMap)->
+delete_dets({TableName, TableIndex}=_Table, TablesMap)->
     TableNameMap = maps:get(TableName, TablesMap, #{}),
     case maps:get(TableIndex, TableNameMap, undefined) of
         undefined ->
@@ -228,7 +289,7 @@ delete_dets({TableName, TableIndex}=Table, TablesMap)->
             end
     end.
 
-reopen_dets({TableName, TableIndex}=Table, TablePath, TablesMap)-> 
+reopen_dets({TableName, TableIndex}=_Table, TablePath, TablesMap)-> 
     case dets:open_file(TablePath) of
         {ok, TableRef}->
             TableNameMap = maps:get(TableName, TablesMap, #{}),
@@ -236,6 +297,9 @@ reopen_dets({TableName, TableIndex}=Table, TablePath, TablesMap)->
         Error->
             Error
     end.
+
+get_dets_file({TableName, TableIndex}, DetsMap)->
+    maps:get(file, maps:get(TableIndex, maps:get(TableName, DetsMap, #{}), #{}), undefined).
 
 load_all_dets(PrivDir, _Map)->
     DetsFiles = filelib:wildcard( "*.dets", PrivDir),
@@ -247,12 +311,20 @@ load_all_dets(PrivDir, _Map)->
 
 parse_dets_tablepath(Path, Map)->
     BaseName = filename:basename(Path, ".dets"),
-    [Name, Index]=string:split(BaseName,"_"),
-    case catch list_to_integer(Index) of
-        {'EXIT',Reason}->
-            {Name, gen_index(Name, Map)};
-        IntIndex->
-            {Name, IntIndex}
+    case string:split(BaseName,"_") of
+        [Name, []]-> %% no index in filename
+            error_logger:error_msg("Cannot get index of ~p dets file.", [Path]),
+            {Name, gen_index(Name,Map)};
+        [BaseName]-> %% no split '_' in filename
+            error_logger:error_msg("Cannot get index of ~p dets file.", [Path]),
+            {BaseName, gen_index(BaseName,Map)};
+        [Name, Index]->
+            case catch list_to_integer(Index) of
+                {'EXIT',_Reason}-> %% not int index
+                    {Name, Index};
+                IntIndex->
+                    {Name, IntIndex}
+            end
     end.
 %% todo 
 %% 
