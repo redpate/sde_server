@@ -59,18 +59,18 @@ handle_call({get, dets, TableName, Index}, _From, #{priv_dir := PrivDir, dets_ta
             #{ref => {error, invalid_index}}), 
            {error, undefined}),
      {reply, Res, State};
-handle_call({delete, dets, Table}, _From, #{priv_dir := PrivDir, dets_tables := TablesMap}=State) ->
-    IsValidTble = is_valid_tablename(Table, TablesMap),
+handle_call({delete, dets, TableName, Index}, _From, #{priv_dir := PrivDir, dets_tables := TablesMap}=State) ->
+    IsValidTble = is_valid_tablename({TableName, Index}, TablesMap),
     if
         IsValidTble->
-            case delete_dets(Table, TablesMap) of
+            case delete_dets(TableName, Index, TablesMap) of
                 {error, Reason}->
                     {reply, {error, Reason}, State};
                 NewTablesMap ->
                     {reply, true, State#{dets_tables => NewTablesMap}}
             end;
         true->
-            error_logger:error_msg("Cannot delete ~p dets table. State was ~p", [Table, State]),
+            error_logger:error_msg("Cannot delete ~p dets table. State was ~p", [{TableName, Index}, State]),
             {reply, {error, invalid_table}, State}
     end;
 handle_call({parse_yaml, FileName, TableOptions, ParseFunction}, {FromPid, _}, State) ->
@@ -95,9 +95,8 @@ handle_cast(_Msg, State) ->
 %% Description: Handling all non call/cast messages
 %%--------------------------------------------------------------------
 handle_info({reopen, TablePath, {TableName, TableIndex}}, #{dets_tables := TablesMap}=State) -> 
-    ok = dets:close({TableName, TableIndex}), error_logger:error_msg("close ~p", [TableName]),
+    ok = dets:close({TableName, TableIndex}),
     {ok, Ref}= dets:open_file(TablePath), %% if dets file deleted during this time. there is something global wrong with usage of app
-    error_logger:error_msg("open ~p", [TablePath]),
     TableMap =maps:get(TableName,TablesMap,#{}),
     IndexMap =maps:get(TableIndex,TableMap,#{}),
     {noreply, State#{dets_tables => TablesMap#{TableName => TableMap#{TableIndex => IndexMap#{ref => Ref, file => TablePath}}}}};
@@ -136,8 +135,8 @@ create_dets(TableName, Options)->
 get_table(TableName, Index)->
     gen_server:call(?MODULE, {get, dets, TableName, Index}).
 
-delete_dets(Table)->
-    gen_server:call(?MODULE, {delete, dets, Table}).
+delete_dets(TableName, Index)->
+    gen_server:call(?MODULE, {delete, dets, TableName, Index}).
 
 -spec parse_yaml(list()) -> worker().
 
@@ -190,7 +189,6 @@ parse_yaml(_FilePath, TableOptions, {ParseModule, ParseFunction}, ReturnPid, #{s
             apply(ParseModule, ParseFunction, [TableName, ParsedYaml]),
             TablePath = get_dets_file(TableName, Dets),
             ok = dets:sync(TableName),
-            error_logger:error_msg("sync ~p", [TableName]),
             maps:get(pid, State, ReturnPid) ! {reopen, TablePath, TableName},
             ok;
         Error->
@@ -210,7 +208,6 @@ create_dets(_TableName, PrivDir, _Options, TablesMap)->
     end,
     {ok, TableName} = dets:open_file(TableName, Options),
     BaseMap = maps:get(BaseName, TablesMap, #{}),  %% already checked at stage of generating index
-    error_logger:error_msg("Created ~p", [self()]),
     {TableName, TablesMap#{BaseName => BaseMap#{Index => #{file => FilePath}}}}.
 
 proc_options(Options, _TableName)->
@@ -260,7 +257,7 @@ write_new_table(Key, Record, Table)->
     true = dets:insert_new(Table, {Key, Record}), Table.
 
 
-delete_dets({TableName, TableIndex}=_Table, TablesMap)->
+delete_dets(TableName, TableIndex, TablesMap)->
     TableNameMap = maps:get(TableName, TablesMap, #{}),
     case maps:get(TableIndex, TableNameMap, undefined) of
         undefined ->

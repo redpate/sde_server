@@ -33,7 +33,7 @@ Get dets reference
 Delete table
 
 ``` erl
-    sde_server:delete_dets({TableName,Index}).
+    sde_server:delete_dets(TableName,Index).
 ```
 # TODO
 - ets clients
