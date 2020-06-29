@@ -138,10 +138,10 @@ get_table(TableName, Index)->
 delete_dets(TableName, Index)->
     gen_server:call(?MODULE, {delete, dets, TableName, Index}).
 
--spec parse_yaml(list()) -> worker().
+-spec parse_yaml(string()) -> worker().
 
 parse_yaml(FileName)->
-    gen_server:call(?MODULE, {parse_yaml, FileName, [], ?SIMPLE_PARSER}).
+    parse_yaml(FileName, [], ?SIMPLE_PARSER).
 
 -type option() :: {access, dets:access()}
      | {auto_save, dets:auto_save()}
@@ -152,23 +152,40 @@ parse_yaml(FileName)->
      | {ram_file, boolean()}
      | {repair, boolean() | force}
      | {type, dets:type()}
-     | {name, {term(), term()}}
+     | {name, tablename()}
      | {file, file:name()}.
 
 -type pase_fun() :: {module(), function()}.
 -type worker() :: pid().
-
--spec parse_yaml(list(), [option()] | pase_fun()) -> worker().
+-type tablename() :: {string(), string() | integer()}.
+-spec parse_yaml(string(), [option()] | pase_fun()) -> worker().
 
 parse_yaml(FileName, TableOptions) when is_list(TableOptions)->
-    gen_server:call(?MODULE, {parse_yaml, FileName, TableOptions, ?SIMPLE_PARSER});
+    parse_yaml(FileName, TableOptions, ?SIMPLE_PARSER);
 parse_yaml(FileName, ParseFunction) when is_tuple(ParseFunction)->
-    gen_server:call(?MODULE, {parse_yaml, FileName, [], ParseFunction}).
+    parse_yaml(FileName, [], ParseFunction).
 
--spec parse_yaml(list(), option(), pase_fun()) -> worker().
+-spec parse_yaml(string(), option(), pase_fun()) -> worker().
 
 parse_yaml(FileName, TableOptions, ParseFunction) when is_tuple(ParseFunction)->
     gen_server:call(?MODULE, {parse_yaml, FileName, TableOptions, ParseFunction}).
+
+-spec wait_parse_yaml(pid()) -> tablename().
+
+wait_parse_yaml(Pid)->
+    receive
+        {yaml_parsed, Pid, TableName}-> TableName
+    end.
+
+-spec wait_parse_yaml(pid(), integer()) -> tablename() | {error, timeout}.
+
+wait_parse_yaml(Pid, Time) when is_pid(Pid)->
+    receive
+        {yaml_parsed, Pid, TableName}-> TableName
+    after
+        Time->{error, timeout}
+    end.
+
 
 state()->
     gen_server:call(?MODULE,state).
@@ -190,6 +207,7 @@ parse_yaml(_FilePath, TableOptions, {ParseModule, ParseFunction}, ReturnPid, #{s
             TablePath = get_dets_file(TableName, Dets),
             ok = dets:sync(TableName),
             maps:get(pid, State, ReturnPid) ! {reopen, TablePath, TableName},
+            timer:send_after(1000, ReturnPid, {yaml_parsed, self(), TableName}),
             ok;
         Error->
             error_logger:error_msg("Cannot parse ~p yaml file. ~p", [FilePath, Error]),
