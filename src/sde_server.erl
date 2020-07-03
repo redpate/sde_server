@@ -170,21 +170,39 @@ parse_yaml(FileName, ParseFunction) when is_tuple(ParseFunction)->
 parse_yaml(FileName, TableOptions, ParseFunction) when is_tuple(ParseFunction)->
     gen_server:call(?MODULE, {parse_yaml, FileName, TableOptions, ParseFunction}).
 
--spec wait_parse_yaml(pid()) -> tablename().
+-spec wait_parse_yaml(pid()) -> tablename() | {error, term()}.
 
 wait_parse_yaml(Pid)->
     receive
-        {yaml_parsed, Pid, TableName}-> TableName
+        {yaml_parsed, Pid, TableName}-> TableName;
+        {error, Pid, Error}->{error, Error}
     end.
 
--spec wait_parse_yaml(pid(), integer()) -> tablename() | {error, timeout}.
+-spec wait_parse_yaml(pid(), integer()) -> tablename() | {error, term()}.
 
 wait_parse_yaml(Pid, Time) when is_pid(Pid)->
     receive
-        {yaml_parsed, Pid, TableName}-> TableName
+        {yaml_parsed, Pid, TableName}-> TableName;
+        {error, Pid, Error}->{error, Error}
     after
         Time->{error, timeout}
     end.
+
+-spec wait_parse_yaml_list([pid()]) -> [tablename()] | {error, term()}.
+
+wait_parse_yaml_list(PidList) ->wait_parse_yaml_list(PidList, []).
+
+wait_parse_yaml_list([], TableNames) ->TableNames;
+wait_parse_yaml_list(PidList, TableNames)->
+    receive
+        {yaml_parsed, Pid, TableName}  ->
+            case lists:member(Pid,PidList) of
+                true-> wait_parse_yaml_list(lists:delete(Pid,PidList), [TableName|TableNames]);
+                false->wait_parse_yaml(PidList, TableNames)
+            end;
+        {error, Pid, Error}->{error, Error}
+    end.
+
 
 
 state()->
@@ -200,18 +218,16 @@ parse_yaml(_FilePath, TableOptions, {ParseModule, ParseFunction}, ReturnPid, #{s
     _TableName = filename:basename(_FilePath, ".yaml"),
     FilePath = filename:join(SdeDir, _FilePath),
     {TableName, Dets} = create_dets(_TableName, TableOptions),
-    error_logger:info_msg("Parsing ~p yaml file to ~p dets....", [FilePath, TableName]),
     case fast_yaml:decode_from_file(FilePath, ?YAML_PARSING_OPTIONS) of
         {ok, ParsedYaml}->
             apply(ParseModule, ParseFunction, [TableName, ParsedYaml]),
             TablePath = get_dets_file(TableName, Dets),
             ok = dets:sync(TableName),
             maps:get(pid, State, ReturnPid) ! {reopen, TablePath, TableName},
-            timer:send_after(1000, ReturnPid, {yaml_parsed, self(), TableName}),
-            ok;
+            ReturnPid ! {yaml_parsed, self(), TableName}, ok;
         Error->
-            error_logger:error_msg("Cannot parse ~p yaml file. ~p", [FilePath, Error]),
-            ReturnPid ! {error, Error},
+            error_logger:error_msg("Cannot parse ~p yaml file (~p table). ~p", [FilePath, TableName, Error]),
+            ReturnPid ! {error, self(), Error},
             throw(Error)
     end.
 
