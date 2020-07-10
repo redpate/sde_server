@@ -23,6 +23,7 @@ init_per_suite(Config) ->
   random:seed(now()),
   ok = application:set_env(sde_server, sde_dir, ?SDE_DIR),
   ok = application:set_env(sde_server, priv_dir, ?PRIV_DIR),
+  clean_dir_all(?PRIV_DIR),
   {ok, StartedLists} = application:ensure_all_started(sde_server),
   [{application, sde_server}| Config].
 
@@ -45,17 +46,16 @@ state_test(_Config)->
 parse_yaml_test(_Config)->
   Pid = sde_server:parse_yaml(?LARGE_FILE),
   ?assert(is_pid(Pid)),
-  LargeTableName = sde_server:wait_parse_yaml(Pid),
   
   Pid2 = sde_server:parse_yaml(?BAG_FILE, [{name, {"foo","bar"}}, {type, bag}]),
   ?assert(is_pid(Pid2)),
-  BagTableName = sde_server:wait_parse_yaml(Pid2),
-  ?assertNotEqual(BagTableName, LargeTableName).
+  [TableName1,TableName2]=sde_server:wait_parse_yaml_list([Pid,Pid2]),
+  ?assertNotEqual(TableName1, TableName2).
 
 race_test(_Config)->
   PidList = lists:map(fun(Index)->
       sde_server:parse_yaml(?BAG_FILE, [{name, {"race",Index}}, {type, bag}])
-    end, lists:seq(1,200)),
+    end, lists:seq(1,100)),
   BaseRef = sde_server:get_table("foo","bar"),
   BaseNoKeys = dets:info(BaseRef, no_keys),
   TableNames = sde_server:wait_parse_yaml_list(PidList),
@@ -65,7 +65,7 @@ race_test(_Config)->
     case dets:info(Ref, no_keys) of
       BaseNoKeys->Acc;
       InvalidValue-> [{Index, InvalidValue}|Acc]
-  end end, [], lists:seq(1,200))).
+  end end, [], lists:seq(1,100))).
 
 
 clean_dir_all(Dir)->

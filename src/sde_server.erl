@@ -37,7 +37,9 @@ init({SdeDir, PrivDir}) ->
     {ok, #{sde_dir => SdeDir,
             pid => self(),
             priv_dir => PrivDir,
-            dets_tables => load_all_dets(PrivDir, #{})}
+            dets_tables => load_all_dets(PrivDir, #{}),
+            clients => []
+            }
     }.
 %%--------------------------------------------------------------------
 %% Function: %% handle_call(Request, From, State) -> {reply, Reply, State} |
@@ -49,17 +51,26 @@ init({SdeDir, PrivDir}) ->
 %% Description: Handling call messages
 %%--------------------------------------------------------------------
 handle_call({create, dets, _BaseTableName, Options}, _From, #{priv_dir := PrivDir, dets_tables := TablesMap}=State) ->
-    _TableName = {_BaseTableName, gen_index(_BaseTableName, TablesMap)}, 
+    _TableName = gen_tablename(_BaseTableName, TablesMap), 
     {TableName, NewTablesMap}=Res = ?MODULE:create_dets(_TableName, PrivDir, Options, TablesMap),
     {reply, Res, State#{dets_tables => NewTablesMap}};
-handle_call({get, dets, TableName, Index}, _From, #{priv_dir := PrivDir, dets_tables := TablesMap}=State) ->
+handle_call({get, dets, TableName, Index}, _From, #{dets_tables := TablesMap}=State) ->
      Res = maps:get(ref,
             maps:get(Index, 
                 maps:get(TableName, TablesMap, #{Index => #{ref => {error, invalid_tablename}}}),
             #{ref => {error, invalid_index}}), 
            {error, undefined}),
      {reply, Res, State};
-handle_call({delete, dets, TableName, Index}, _From, #{priv_dir := PrivDir, dets_tables := TablesMap}=State) ->
+handle_call({get, dets, TableName}, _From, #{dets_tables := TablesMap}=State) ->
+    case maps:get(TableName, TablesMap, undefined) of
+        undefined->
+            {error, invalid_tablename};
+        TableNameMap->
+            LastIndex = lists:last(lists:usort(maps:keys(TableNameMap))),
+            Res = maps:get(ref, maps:get(LastIndex, TableNameMap, #{ref => {error, invalid_index}}), {error, undefined}),
+            {reply, Res, State}
+    end;
+handle_call({delete, dets, TableName, Index}, _From, #{dets_tables := TablesMap}=State) ->
     IsValidTble = is_valid_tablename({TableName, Index}, TablesMap),
     if
         IsValidTble->
@@ -132,9 +143,14 @@ create_dets(TableName)->
 create_dets(TableName, Options)->
     gen_server:call(?MODULE, {create, dets, TableName, Options}).
 
+get_table({TableName, Index})->get_table(TableName, Index);
+get_table(TableName)->
+    gen_server:call(?MODULE, {get, dets, TableName}).
 get_table(TableName, Index)->
     gen_server:call(?MODULE, {get, dets, TableName, Index}).
 
+
+delete_dets({TableName, Index})->delete_dets(TableName, Index).
 delete_dets(TableName, Index)->
     gen_server:call(?MODULE, {delete, dets, TableName, Index}).
 
@@ -197,10 +213,18 @@ wait_parse_yaml_list(PidList, TableNames)->
     receive
         {yaml_parsed, Pid, TableName}  ->
             case lists:member(Pid,PidList) of
-                true-> wait_parse_yaml_list(lists:delete(Pid,PidList), [TableName|TableNames]);
+                true-> 
+                    error_logger:info_msg("~p ready", [TableName]),
+                    wait_parse_yaml_list(lists:delete(Pid,PidList), [TableName|TableNames]);
                 false->wait_parse_yaml(PidList, TableNames)
             end;
-        {error, Pid, Error}->{error, Error}
+        {error, Pid, Error}->
+            case lists:member(Pid,PidList) of
+                true-> 
+                    error_logger:info_msg("Error from ~p  - ~p", [Pid, Error]),
+                    wait_parse_yaml_list(lists:delete(Pid,PidList), TableNames);
+                false->wait_parse_yaml(PidList, TableNames)
+            end
     end.
 
 
@@ -259,13 +283,15 @@ proc_options(Options, _TableName)->
     end.
 
 
-gen_table_path(Root, {Name,Index}) when list(Index)->
+gen_table_path(Root, {Name,Index}) when is_list(Index)->
     filename:join(Root, lists:append([Name, "_", Index, ".dets"]));
 gen_table_path(Root, {Name,Index}) when is_integer(Index)->
     filename:join(Root, lists:append([Name, "_", integer_to_list(Index), ".dets"])).
 
-gen_index(BaseName, TablesMap)->
-    get_max_index(BaseName, TablesMap)+1.
+gen_tablename({BaseName,Index}, TablesMap)->
+    {BaseName,Index};
+gen_tablename(BaseName, TablesMap)->
+    {BaseName, get_max_index(BaseName, TablesMap)+1}.
 get_max_index(BaseName, TablesMap)->
     BaseMap = maps:get(BaseName, TablesMap, #{}),
     case maps:keys(BaseMap) of
@@ -276,7 +302,7 @@ get_max_index(BaseName, TablesMap)->
         end, 0, KeysList)
     end.
 
-is_valid_tablename({TableName, TableIndex}=Table, TablesMap)->
+is_valid_tablename({TableName, TableIndex}=_Table, TablesMap)->
     case maps:get(TableIndex,maps:get(TableName, TablesMap, #{}), undefined) of
         undefined ->
             false;
@@ -345,10 +371,10 @@ parse_dets_tablepath(Path, Map)->
     case string:split(BaseName,"_") of
         [Name, []]-> %% no index in filename
             error_logger:error_msg("Cannot get index of ~p dets file.", [Path]),
-            {Name, gen_index(Name,Map)};
+            gen_tablename(Name,Map);
         [BaseName]-> %% no split '_' in filename
             error_logger:error_msg("Cannot get index of ~p dets file.", [Path]),
-            {BaseName, gen_index(BaseName,Map)};
+            gen_tablename(BaseName,Map);
         [Name, Index]->
             case catch list_to_integer(Index) of
                 {'EXIT',_Reason}-> %% not int index
