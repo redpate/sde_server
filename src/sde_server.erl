@@ -54,6 +54,9 @@ handle_call({create, dets, _BaseTableName, Options}, _From, #{priv_dir := PrivDi
     _TableName = gen_tablename(_BaseTableName, TablesMap), 
     {TableName, NewTablesMap}=Res = ?MODULE:create_dets(_TableName, PrivDir, Options, TablesMap),
     {reply, Res, State#{dets_tables => NewTablesMap}};
+handle_call({create, gen_dets, TableName, Options, GenModule, GenFunction, GenOptiions}, {FromPid, _}, State) ->
+    WorkerPid = spawn(?MODULE, gen_dets, [TableName, Options, GenModule, GenFunction, GenOptiions, FromPid, State]),
+    {reply, WorkerPid, State}; %% return pid of worker
 handle_call({get, dets, TableName, Index}, _From, #{dets_tables := TablesMap}=State) ->
      Res = maps:get(ref,
             maps:get(Index, 
@@ -142,6 +145,9 @@ create_dets(TableName)->
     create_dets(TableName, []).
 create_dets(TableName, Options)->
     gen_server:call(?MODULE, {create, dets, TableName, Options}).
+
+gen_dets(TableName, Options, GenModule, GenFunction, GenOptiions)->
+    gen_server:call(?MODULE, {create, gen_dets, TableName, Options, GenModule, GenFunction, GenOptiions}).
 
 get_table({TableName, Index})->get_table(TableName, Index);
 get_table(TableName)->
@@ -236,6 +242,9 @@ state()->
 %%% Internal functions
 %%--------------------------------------------------------------------
 
+
+
+
 -define(YAML_PARSING_OPTIONS, [{maps, true}]).
 
 parse_yaml(_FilePath, TableOptions, {ParseModule, ParseFunction}, ReturnPid, #{sde_dir := SdeDir}=State)->
@@ -254,6 +263,13 @@ parse_yaml(_FilePath, TableOptions, {ParseModule, ParseFunction}, ReturnPid, #{s
             ReturnPid ! {error, self(), Error},
             throw(Error)
     end.
+
+gen_dets(TableName, Options, GenModule, GenFunction, GenOptiions, ReturnPid, State)->
+    {TableName, Dets} = create_dets(TableName, Options),
+    TablePath = get_dets_file(TableName, Dets),
+    maps:get(pid, State, ReturnPid) ! {reopen, TablePath, TableName},
+    Ret = apply(GenModule, GenFunction, [TableName|GenOptiions]),
+    ReturnPid ! Ret.
 
 create_dets(_TableName, PrivDir, _Options, TablesMap)->
     {{BaseName, Index}=TableName, _FilePath, Options1} = proc_options(_Options, _TableName),

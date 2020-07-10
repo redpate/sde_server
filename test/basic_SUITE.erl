@@ -10,8 +10,12 @@ all()->
   [
     state_test,
     parse_yaml_test,
+    gen_test,
     race_test
   ].
+
+-define(LARGE_FILE, "typeIDs.yaml").
+-define(BAG_FILE, "dogmaAttributes.yaml").
 
 -type config() :: [{atom(), term()}].
 
@@ -34,14 +38,30 @@ end_per_suite(Config) ->
   clean_dir_all(PrivDir),
   Config.
 
+gen_test(_Config)->
+  Pid1 = sde_server:parse_yaml(?BAG_FILE, [{name, {"gen","dets"}}, {type, bag}]),
+  BagTableName = sde_server:wait_parse_yaml(Pid1),
+  Pid2 = sde_server:gen_dets({"gen","test"}, [], ?MODULE, generator, [BagTableName]),
+  TargetTable = sde_server:wait_parse_yaml(Pid2),
+  ?assertNotEqual(dets:info(sde_server:get_table(BagTableName),size), dets:info(sde_server:get_table(TargetTable),size)).
+
+generator(TargetTable, FromTable)->
+  TargetRef = sde_server:get_table(TargetTable),
+  FromRef = sde_server:get_table(FromTable),
+  dets:traverse(FromRef, fun({Key, Value}) -> if
+     (Key >= 0) and (Key rem 2 =:= 0)->
+       dets:insert_new(TargetRef, {Key, Value}), continue;
+      true->
+        continue
+    end end), 
+  {yaml_parsed, self(), TargetTable}.
+
 state_test(_Config)->
   Map = sde_server:state(),
   ?assert(is_map(Map)),
   ?assertEqual(?SDE_DIR, maps:get(sde_dir, Map)),
   ?assertEqual(?PRIV_DIR, maps:get(priv_dir, Map)).
   
--define(LARGE_FILE, "typeIDs.yaml").
--define(BAG_FILE, "dogmaAttributes.yaml").
 
 parse_yaml_test(_Config)->
   Pid = sde_server:parse_yaml(?LARGE_FILE),
