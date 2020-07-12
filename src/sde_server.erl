@@ -67,7 +67,7 @@ handle_call({get, dets, TableName, Index}, _From, #{dets_tables := TablesMap}=St
 handle_call({get, dets, TableName}, _From, #{dets_tables := TablesMap}=State) ->
     case maps:get(TableName, TablesMap, undefined) of
         undefined->
-            {error, invalid_tablename};
+            {reply, {error, invalid_tablename}, State};
         TableNameMap->
             LastIndex = lists:last(lists:usort(maps:keys(TableNameMap))),
             Res = maps:get(ref, maps:get(LastIndex, TableNameMap, #{ref => {error, invalid_index}}), {error, undefined}),
