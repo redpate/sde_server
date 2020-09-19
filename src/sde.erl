@@ -9,6 +9,7 @@
          terminate/2, code_change/3]).
 
 
+
 %%====================================================================
 %% API
 %%====================================================================
@@ -128,6 +129,10 @@ create_ets(Client,EtsTableName, DetsTableName, Options)->
     gen_server:call({via, sde_server_sup, Client}, {create, ets, EtsTableName, DetsTableName, Options}).
 create_ets(Client, DetsTableName, Options)->
     gen_server:call({via, sde_server_sup, Client}, {create, ets, DetsTableName, Options}).
+create_ets_infinite(Client,EtsTableName, DetsTableName, Options)->
+    gen_server:call({via, sde_server_sup, Client}, {create, ets, EtsTableName, DetsTableName, Options}, infinite).
+create_ets_infinite(Client, DetsTableName, Options)->
+    gen_server:call({via, sde_server_sup, Client}, {create, ets, DetsTableName, Options}, infinite).
 apply_ets(Client,TableName, ApplyModule, ApplyFun, ArgumentsTail)->
     gen_server:call({via, sde_server_sup, Client}, {ets, TableName, ApplyModule, ApplyFun, ArgumentsTail}).
 start_client()->
