@@ -130,9 +130,9 @@ create_ets(Client,EtsTableName, DetsTableName, Options)->
 create_ets(Client, DetsTableName, Options)->
     gen_server:call({via, sde_server_sup, Client}, {create, ets, DetsTableName, Options}).
 create_ets_infinite(Client,EtsTableName, DetsTableName, Options)->
-    gen_server:call({via, sde_server_sup, Client}, {create, ets, EtsTableName, DetsTableName, Options}, infinite).
+    gen_server:call({via, sde_server_sup, Client}, {create, ets, EtsTableName, DetsTableName, Options}, infinity).
 create_ets_infinite(Client, DetsTableName, Options)->
-    gen_server:call({via, sde_server_sup, Client}, {create, ets, DetsTableName, Options}, infinite).
+    gen_server:call({via, sde_server_sup, Client}, {create, ets, DetsTableName, Options}, infinity).
 apply_ets(Client,TableName, ApplyModule, ApplyFun, ArgumentsTail)->
     gen_server:call({via, sde_server_sup, Client}, {ets, TableName, ApplyModule, ApplyFun, ArgumentsTail}).
 start_client()->
